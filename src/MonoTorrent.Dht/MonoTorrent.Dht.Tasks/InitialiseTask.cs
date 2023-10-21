@@ -13,10 +13,10 @@
 // distribute, sublicense, and/or sell copies of the Software, and to
 // permit persons to whom the Software is furnished to do so, subject to
 // the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be
 // included in all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 // EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 // MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -41,7 +41,7 @@ namespace MonoTorrent.Dht.Tasks
         // Choose a completely arbitrary value here. If we have at least this many
         // nodes in the routing table we can consider it 'healthy' enough to allow
         // the state to change to 'Ready' so torrents can begin searching for peers
-        const int MinHealthyNodes = 32;
+        const int MinHealthyNodes = 4;
 
         readonly List<Node> initialNodes;
         readonly DhtEngine engine;
@@ -71,32 +71,40 @@ namespace MonoTorrent.Dht.Tasks
 
         async void BeginAsyncInit ()
         {
-            // If we were given a list of nodes to load at the start, use them
+            //always add the bootstrap nodes to the routing table
             try {
-                if (initialNodes.Count > 0) {
-                    await SendFindNode (initialNodes);
-                } else {
-                    try {
-                        if (BootstrapNodes is null)
-                            BootstrapNodes = await GenerateBootstrapNodes ();
-                        await SendFindNode (BootstrapNodes);
-                    } catch {
-                        initializationComplete.TrySetResult (null);
-                        return;
-                    }
-                }
-            } finally {
+                if (BootstrapNodes is null)
+                    BootstrapNodes = await GenerateBootstrapNodes ();
+                initialNodes.AddRange (BootstrapNodes);
+                await SendFindNode (initialNodes);
+            } catch {
                 initializationComplete.TrySetResult (null);
             }
         }
 
         async Task<Node[]> GenerateBootstrapNodes ()
         {
-            var addresses = await Dns.GetHostAddressesAsync ("router.bittorrent.com");
-            return addresses
-                .Select (t => new IPEndPoint (t, 6881))
-                .Select (t => new Node (NodeId.Create (), t))
-                .ToArray ();
+            var bootstrapAddresses = new Dictionary<string, int> () {
+                { "router.utorrent.com", 6881 },
+                { "router.bittorrent.com", 6881 },
+                { "dht.transmissionbt.com", 6881 },
+                { "dht.aelitis.com", 6881 },
+                { "dht.libtorrent.org", 25401 },
+                { "router.silotis.us", 6881 }
+            };
+
+            var nodes = new List<Node> ();
+            foreach (var address in bootstrapAddresses) {
+                try {
+                    var ipAddresses = await Dns.GetHostAddressesAsync (address.Key);
+                    foreach (var ip in ipAddresses)
+                        nodes.Add (new Node (NodeId.Create (), new IPEndPoint (ip, address.Value)));
+                } catch {
+                    // Ignore any failures
+                }
+            }
+
+            return nodes.ToArray ();
         }
 
         async Task SendFindNode (IEnumerable<Node> newNodes)
