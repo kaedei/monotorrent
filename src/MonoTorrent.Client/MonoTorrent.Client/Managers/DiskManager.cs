@@ -31,6 +31,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
@@ -106,7 +107,7 @@ namespace MonoTorrent.Client
                     if (file.StartPieceIndex == file.EndPieceIndex) {
                         var blocks = actualBlocks;
                         if (blocks > 1)
-                            blocks = (int) Math.Pow (2, (int) Math.Ceiling (Math.Log (blocks, 2)));
+                            blocks = checked((int) BitOps.RoundUpToPowerOf2 (blocks));
                         BlockHashesReleaser = MemoryPool.Default.Rent (blocks * 32, out hashes);
                     } else { 
                         BlockHashesReleaser = MemoryPool.Default.Rent (manager.TorrentInfo!.PieceLength / Constants.BlockSize  * 32, out hashes);
@@ -148,7 +149,8 @@ namespace MonoTorrent.Client
                 if (Manager != null && UseV2) {
                     if (BlockHashes.Length == 32)
                         BlockHashes.Span.CopyTo (dest.V2Hash.Span);
-                    else if (!MerkleHash.TryHash (SHA256Hasher, BlockHashes.Span, Constants.BlockSize, ReadOnlySpan<byte>.Empty, 0, BlockHashes.Span.Length / 32, dest.V2Hash.Span, out written) || written != dest.V2Hash.Length)
+                    // Layer 0 corresponds to 16kB hashes.
+                    else if (!MerkleHash.TryHash (SHA256Hasher, BlockHashes.Span, 0, ReadOnlySpan<byte>.Empty, 0, BlockHashes.Span.Length / 32, dest.V2Hash.Span, out written) || written != dest.V2Hash.Length)
                         return false;
                 }
 
@@ -370,6 +372,10 @@ namespace MonoTorrent.Client
                     int hashingCount = 0;
                     int readingCount = Math.Min (Constants.BlockSize, endOffset - startOffset);
                     var readingTask = ReadAsync (manager, new BlockInfo (pieceIndex, startOffset, readingCount), readingBuffer.Slice (0, readingCount));
+
+                    // Swap to a threadpool thread here so all the incremental hashing happens
+                    // off the main IO loop.
+                    await new EnsureThreadPool ();
                     while (startOffset != endOffset) {
                         // Wait for the reading task to complete.
                         if (!await readingTask.ConfigureAwait (false)) {

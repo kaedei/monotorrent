@@ -7,8 +7,6 @@ using System.Threading.Tasks;
 
 using Microsoft.Win32.SafeHandles;
 
-using MonoTorrent.Client;
-
 using ReusableTasks;
 
 namespace MonoTorrent.PieceWriter
@@ -26,36 +24,45 @@ namespace MonoTorrent.PieceWriter
     {
         public static void MaybeTruncate (string fullPath, long length)
         {
-            var fileStream = new System.IO.FileStream (fullPath, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite, 1, FileOptions.None);
-            if (fileStream.Length <= length) {
-                fileStream.Dispose ();
-                return;
+            if (new FileInfo (fullPath).Length > length) {
+                using (var fileStream = new FileStream (fullPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 1, FileOptions.None))
+                    fileStream.SetLength (length);
             }
-
-            fileStream.Dispose ();
-            fileStream = new FileStream (fullPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 1, FileOptions.None);
-            fileStream.SetLength (length);
-            fileStream.Dispose ();
         }
     }
 
     class RandomFileReaderWriter : IFileReaderWriter
     {
-#if NET6_0_OR_GREATER
-        SafeFileHandle Handle { get; }
-#else
+#if NETSTANDARD2_0 || NETSTANDARD2_1 || NET5_0 || NETCOREAPP3_0 || NET472
         FileStream Handle { get; }
+#else
+        SafeFileHandle Handle { get; }
 #endif
         public bool CanWrite { get; }
         public long Length { get; }
 
         public RandomFileReaderWriter (string fullPath, long length, FileMode fileMode, FileAccess access, FileShare share)
         {
-            FileReaderWriterHelper.MaybeTruncate (fullPath, length);
-#if NET6_0_OR_GREATER
-            Handle = File.OpenHandle (fullPath, fileMode, access, share, FileOptions.None);
-#else
+            // The "preallocate the file before creating" check is racey as another thread could create this file,
+            // so retry without setting the preallocation size if it fails.
+            // This should avoid throwing exceptions most of the time.
+
+#if NETSTANDARD2_0 || NETSTANDARD2_1 || NET5_0 || NETCOREAPP3_0 || NET472
+            try {
+                if (!File.Exists (fullPath))
+                    NtfsSparseFile.CreateSparse (fullPath, length);
+            } catch {
+                // who cares if we can't pre-allocate a sparse file.
+            }
             Handle = new FileStream (fullPath, fileMode, access, share, 1, FileOptions.None);
+#else
+            try {
+                if (!File.Exists (fullPath))
+                    File.OpenHandle (fullPath, fileMode, access, share, FileOptions.None, length).Dispose ();
+            } catch {
+                // who cares if we can't pre-allocate a sparse file.
+            }
+            Handle = File.OpenHandle (fullPath, fileMode, access, share, FileOptions.None);
 #endif
             CanWrite = access.HasFlag (FileAccess.Write);
             Length = length;
@@ -66,15 +73,15 @@ namespace MonoTorrent.PieceWriter
             Handle.Dispose ();
         }
 
-#if NET6_0_OR_GREATER
-        public ReusableTask FlushAsync ()
-            => ReusableTask.CompletedTask;
-#else
+#if NETSTANDARD2_0 || NETSTANDARD2_1 || NET5_0 || NETCOREAPP3_0 || NET472
         public async ReusableTask FlushAsync ()
         {
-            await new ThreadSwitcher ();
+            await new EnsureThreadPool ();
             Handle.Flush ();
         }
+#else
+        public ReusableTask FlushAsync ()
+            => ReusableTask.CompletedTask;
 #endif
 
         public async ReusableTask<int> ReadAsync (Memory<byte> buffer, long offset)
@@ -82,13 +89,13 @@ namespace MonoTorrent.PieceWriter
             if (offset + buffer.Length > Length)
                 throw new ArgumentOutOfRangeException (nameof (offset));
 
-            await new ThreadSwitcher ();
-#if NET6_0_OR_GREATER
-            return RandomAccess.Read (Handle, buffer.Span, offset);
-#else
+            await new EnsureThreadPool ();
+#if NETSTANDARD2_0 || NETSTANDARD2_1 || NET5_0 || NETCOREAPP3_0 || NET472
             if (Handle.Position != offset)
                 Handle.Seek (offset, SeekOrigin.Begin);
             return Handle.Read (buffer);
+#else
+            return RandomAccess.Read (Handle, buffer.Span, offset);
 #endif
         }
 
@@ -97,13 +104,13 @@ namespace MonoTorrent.PieceWriter
             if (offset + buffer.Length > Length)
                 throw new ArgumentOutOfRangeException (nameof (offset));
 
-            await new ThreadSwitcher ();
-#if NET6_0_OR_GREATER
-            RandomAccess.Write (Handle, buffer.Span, offset);
-#else
+            await new EnsureThreadPool ();
+#if NETSTANDARD2_0 || NETSTANDARD2_1 || NET5_0 || NETCOREAPP3_0 || NET472
             if (Handle.Position != offset)
                 Handle.Seek (offset, SeekOrigin.Begin);
             Handle.Write (buffer);
+#else
+            RandomAccess.Write (Handle, buffer.Span, offset);
 #endif
         }
     }

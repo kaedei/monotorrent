@@ -1,10 +1,10 @@
-﻿//
-// ToolboxTests.cs
+//
+// Cache.cs
 //
 // Authors:
 //   Alan McGovern alan.mcgovern@gmail.com
 //
-// Copyright (C) 2020 Alan McGovern
+// Copyright (C) 2009 Alan McGovern
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files (the
@@ -28,35 +28,32 @@
 
 
 using System;
+using System.Collections.Generic;
+using System.Threading;
 
-using NUnit.Framework;
-
-namespace MonoTorrent.Common
+namespace MonoTorrent
 {
-    [TestFixture]
-    public class ToolboxTests
+    class SimpleSpinLock
     {
-        [Test]
-        public void ByteMatch_DifferentArrayLengths ()
+        SpinLock Lock = new SpinLock (false);
+
+        public Releaser Enter ()
         {
-            Assert.IsFalse (Toolbox.ByteMatch (new byte[1], new byte[2]));
+            // Nothing in this library is safe after a thread abort... so let's not care too much about this.
+            bool taken = false;
+            Lock.Enter (ref taken);
+            return new Releaser (this);
         }
 
-        [Test]
-        public void ByteMatch_DifferentArrayLengths2 ()
+        public struct Releaser : IDisposable
         {
-            Assert.IsFalse (Toolbox.ByteMatch (new byte[1], 0, new byte[2], 0, 2));
-            Assert.IsTrue (Toolbox.ByteMatch (new byte[1], 0, new byte[2], 0, 1));
-        }
+            SimpleSpinLock SimpleSpinLock;
 
-        [Test]
-        public void ByteMatch_Null ()
-        {
-            Assert.Throws<ArgumentNullException> (() => Toolbox.ByteMatch (null, new byte[1]));
-            Assert.Throws<ArgumentNullException> (() => Toolbox.ByteMatch (new byte[1], null));
+            internal Releaser (SimpleSpinLock ssl)
+                => SimpleSpinLock = ssl;
 
-            Assert.Throws<ArgumentNullException> (() => Toolbox.ByteMatch (null, 0, new byte[2], 0, 2));
-            Assert.Throws<ArgumentNullException> (() => Toolbox.ByteMatch (new byte[1], 0, null, 0, 2));
+            public void Dispose ()
+                => SimpleSpinLock?.Lock.Exit (false);
         }
     }
 }

@@ -970,6 +970,9 @@ namespace MonoTorrent.Client
                 if (argsCache.Count == 1)
                     InvokePieceHashedAsync ();
             }
+
+            if (Mode is DownloadMode downloadMode && Bitfield.AllTrue)
+                _ = downloadMode.UpdateSeedingDownloadingState ();
         }
 
         Queue<PieceHashedEventArgs> argsCache = new Queue<PieceHashedEventArgs> ();
@@ -1150,6 +1153,9 @@ namespace MonoTorrent.Client
                 foreach (var kvp in e.Peers)
                     count += AddPeers (kvp.Value, kvp.Key, prioritise: true, fromTracker: true);
                 RaisePeersFound (new TrackerPeersAdded (this, count, e.Peers.Count, e.Tracker));
+
+                if (Engine != null)
+                    Engine.ConnectionManager.TryConnect ();
             }
         }
 

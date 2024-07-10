@@ -32,6 +32,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Numerics;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Threading;
@@ -132,7 +133,11 @@ namespace MonoTorrent
         /// </summary>
         public bool StoreMD5 { get; set; }
 
-        bool StoreSHA1 => Type == TorrentType.V1OnlyWithPaddingFiles || Type == TorrentType.V1V2Hybrid;
+        /// <summary>
+        /// A SHA1 checksum will be generated for each file when this is set to <see langword="true"/>. This is required for BEP47.
+        /// Defaults to false.
+        /// </summary>
+        public bool StoreSHA1 { get; set; }
 
         /// <summary>
         /// Determines whether 
@@ -298,7 +303,7 @@ namespace MonoTorrent
             if (merkleLayers.Count > 0) {
                 var dict = new BEncodedDictionary ();
                 foreach (var kvp in merkleLayers.Where (t => t.Key.StartPieceIndex != t.Key.EndPieceIndex)) {
-                    var rootHash = MerkleHash.Hash (kvp.Value.Span, PieceLength);
+                    var rootHash = MerkleHash.Hash (kvp.Value.Span, BitOps.CeilLog2 (PieceLength / Constants.BlockSize));
                     dict[BEncodedString.FromMemory (rootHash)] = BEncodedString.FromMemory (kvp.Value);
                 }
 
@@ -332,7 +337,7 @@ namespace MonoTorrent
                 fileTree = (BEncodedDictionary) inner;
             }
             if (value.Length > 32)
-                value = MerkleHash.Hash (value.Span, PieceLength);
+                value = MerkleHash.Hash (value.Span, BitOps.CeilLog2 (PieceLength / Constants.BlockSize));
 
             var fileData = new BEncodedDictionary {
                 {"length", (BEncodedNumber) key.Length },
@@ -387,12 +392,18 @@ namespace MonoTorrent
             if (torrentInfo.Size == 0)
                 return (default, new Dictionary<ITorrentManagerFile, ReadOnlyMemory<byte>> (), new Dictionary<ITorrentManagerFile, ReadOnlyMemory<byte>> (), new Dictionary<ITorrentManagerFile, ReadOnlyMemory<byte>> ());
 
-            var settings = new EngineSettingsBuilder {
-                DiskCacheBytes = PieceLength * 2, // Store the currently processing piece and allow preping the next piece
-                DiskCachePolicy = StoreMD5 || StoreSHA1 ? CachePolicy.ReadsAndWrites : CachePolicy.WritesOnly
-            }.ToSettings ();
-
             var pieceCount = torrentInfo.PieceCount ();
+            // Either allow pre-loading three whole pieces, or as many as will fit into 512kB.
+            // Clamp the value so we don't try to pre-load 3 pieces if there are only 1 or 2 pieces in the whole file.
+            // Some torrents use 16kB or 32kB pieces, so allowing preloading of up to 512kB worth seems reasonable?
+            int preloadPieceCount = Math.Min (Math.Max (3, (512 * 1024) / PieceLength), pieceCount);
+
+            var settings = new EngineSettingsBuilder {
+                // If we need to calculate per-file hashes, ensure we have enough capacity in the memory cache to avoid reading
+                // data from disk twice, and ensure we cache the data after we read it rather than ditching it ~immediately.
+                DiskCacheBytes = (StoreMD5 || StoreSHA1) ? preloadPieceCount * PieceLength : Constants.BlockSize * 8,
+                DiskCachePolicy = (StoreMD5 || StoreSHA1) ? CachePolicy.ReadsAndWrites : CachePolicy.WritesOnly
+            }.ToSettings ();
 
             using var diskManager = new DiskManager (settings, Factories);
             using var releaser = MemoryPool.Default.Rent (Constants.BlockSize, out Memory<Byte> reusableBlockBuffer);
@@ -414,13 +425,18 @@ namespace MonoTorrent
             // All files will be merkle hashed into individual merkle trees
             Memory<byte> merkleHashes = Type.HasV2 () ? new byte[pieceCount * 32] : Array.Empty<byte> ();
 
-            var hashes = new PieceHash (sha1Hashes.IsEmpty ? sha1Hashes : sha1Hashes.Slice (0, 20), merkleHashes.IsEmpty ? merkleHashes : merkleHashes.Slice (0, 32));
-            var currentPiece = diskManager.GetHashAsync (manager, 0, hashes).ConfigureAwait (false);
-            var previousAppend = ReusableTask.CompletedTask;
+            PieceHash hashes;
+            var queue = new Queue<ReusableTask<bool>> ();
+            for (int i = 0; i < preloadPieceCount; i++) {
+                hashes = new PieceHash (sha1Hashes.IsEmpty ? sha1Hashes : sha1Hashes.Slice (i * 20, 20), merkleHashes.IsEmpty ? merkleHashes : merkleHashes.Slice (i * 32, 32));
+                queue.Enqueue (diskManager.GetHashAsync (manager, i, hashes).ConfigureAwait (false));
+            }
+
             for (int piece = 0; piece < pieceCount; piece++) {
                 token.ThrowIfCancellationRequested ();
                 // Wait for the current piece's async read to complete. When this task completes, the V1 and/or V2 hash will
                 // be stored in the 'hashes' object
+                var currentPiece = queue.Dequeue ();
                 await currentPiece;
 
                 var currentFile = files.Span[0];
@@ -438,10 +454,10 @@ namespace MonoTorrent
                 }
 
                 // Asynchronously begin reading the *next* piece and computing the hash for that piece.
-                var nextPiece = piece + 1;
+                var nextPiece = piece + preloadPieceCount;
                 if (nextPiece < pieceCount) {
                     hashes = new PieceHash (sha1Hashes.IsEmpty ? sha1Hashes : sha1Hashes.Slice (nextPiece * 20, 20), merkleHashes.IsEmpty ? merkleHashes : merkleHashes.Slice (nextPiece * 32, 32));
-                    currentPiece = diskManager.GetHashAsync (manager, nextPiece, hashes).ConfigureAwait (false);
+                    queue.Enqueue (diskManager.GetHashAsync (manager, nextPiece, hashes).ConfigureAwait (false));
                 }
 
                 // While we're computing the hash for 'piece + 1', we can compute the MD5 and/or SHA1 for the specific file
@@ -454,8 +470,6 @@ namespace MonoTorrent
                     }
                 }
             }
-            // Ensure the final block from the final piece is hashed.
-            await previousAppend;
 
             var merkleLayers = new Dictionary<ITorrentManagerFile, ReadOnlyMemory<byte>> ();
             if (merkleHashes.Length > 0) {

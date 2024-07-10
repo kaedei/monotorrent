@@ -1,10 +1,10 @@
 ﻿//
-// Synchronizer.cs
+// UdpClientExtensions.cs
 //
 // Authors:
 //   Alan McGovern alan.mcgovern@gmail.com
 //
-// Copyright (C) 2019 Alan McGovern
+// Copyright (C) 2024 Alan McGovern
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files (the
@@ -26,40 +26,25 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
-
+using System;
 using System.Collections.Generic;
-
-using ReusableTasks;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading.Tasks;
 
 namespace MonoTorrent
 {
-    class Synchronizer
+#if NET472 || NET5_0 || NET6_0 || NETCOREAPP3_0 || NETSTANDARD2_0 || NETSTANDARD2_1
+    static class UdpClientExtensions
     {
-        public static Queue<Synchronizer> CreateLinked (int count)
-        {
-            var all = new List<Synchronizer> ();
-            for (int i = 0; i < count; i++)
-                all.Add (new Synchronizer ());
+        public static Task<int> SendAsync (this UdpClient client, ReadOnlyMemory<byte> datagram, int bytes, IPEndPoint? endPoint)
+            => client.SendAsync (datagram.ToArray (), bytes, endPoint);
 
-            all[0].Self.SetResult (true);
+        public static int Send (this UdpClient client, ReadOnlyMemory<byte> datagram, int bytes)
+            => client.Send (datagram.ToArray (), bytes);
 
-            for (int i = 0; i < count; i++) {
-                all[i].PreviousNode = all[(i - 1 + count) % count];
-                all[i].NextNode = all[(i + 1 + count) % count];
-            }
-            return new Queue<Synchronizer> (all);
-        }
-
-        public ReusableTaskCompletionSource<bool>? Next => NextNode?.Self;
-        public ReusableTaskCompletionSource<bool> Self { get; } = new ReusableTaskCompletionSource<bool> ();
-
-        Synchronizer? PreviousNode;
-        Synchronizer? NextNode;
-
-        public void Disconnect ()
-        {
-            PreviousNode!.NextNode = NextNode;
-            NextNode!.PreviousNode = PreviousNode;
-        }
     }
+#endif
 }

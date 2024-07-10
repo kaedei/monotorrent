@@ -63,7 +63,7 @@ namespace MonoTorrent
 
         public int PieceLayerIndex { get; }
 
-        public ReadOnlyMemory<byte> Root => Layers[Layers.Count - 1];
+        public MerkleRoot Root => MerkleRoot.FromMemory (Layers[Layers.Count - 1]);
 
         internal ReadOnlyMerkleLayers (IReadOnlyList<ReadOnlyMemory<byte>> layers, int pieceLayer)
         {
@@ -75,7 +75,7 @@ namespace MonoTorrent
         {
             var hashes = Layers[layer];
             if ((index * 32) >= hashes.Length)
-                return MerkleHash.PaddingHashes[(int) Math.Pow (2, layer) * 16384];
+                return MerkleHash.PaddingHashesByLayer[layer];
             return hashes.Slice (index * 32, 32);
         }
 

@@ -168,7 +168,7 @@ namespace MonoTorrent.Connections.Tracker
 
             var b = new UriQueryBuilder (Uri);
             b.Add ("info_hash", infoHash.Truncate ().UrlEncode ())
-             .Add ("peer_id", BEncodedString.FromMemory (parameters.PeerId).UrlEncode ())
+             .Add ("peer_id", UriQueryBuilder.UrlEncodeQuery (parameters.PeerId.Span))
              .Add ("port", port)
              .Add ("uploaded", parameters.BytesUploaded)
              .Add ("downloaded", parameters.BytesDownloaded)
@@ -192,11 +192,17 @@ namespace MonoTorrent.Connections.Tracker
             //    sb.Append("&event=started");
             //    parameters.Id.Tracker.Tier.SendingStartedEvent = true;
             //}
-            if (parameters.ClientEvent != TorrentEvent.None)
-                b.Add ("event", parameters.ClientEvent.ToString ().ToLower ());
-
+            if (parameters.ClientEvent != TorrentEvent.None) {
+                var eventString = parameters.ClientEvent switch {
+                    TorrentEvent.Started => "started",
+                    TorrentEvent.Stopped => "stopped",
+                    TorrentEvent.Completed => "completed",
+                    _ => throw new NotSupportedException ()
+                };
+                b.Add ("event", eventString);
+            }
             if (!BEncodedString.IsNullOrEmpty (TrackerId))
-                b.Add ("trackerid", TrackerId!.UrlEncode ());
+                b.Add ("trackerid", UriQueryBuilder.UrlEncodeQuery(TrackerId!.Span));
 
             return b.ToUri ();
         }
@@ -328,12 +334,15 @@ namespace MonoTorrent.Connections.Tracker
             }
 
             var files = (BEncodedDictionary) dict[FilesKey];
-            if (files.Count != 1)
+            if (files.Count != 1 && !(infoHashes.IsHybrid && files.Count == 2))
                 throw new TrackerException ("The scrape response contained unexpected data");
 
             var results = new Dictionary<InfoHash, ScrapeInfo> ();
             foreach (var infoHash in new[] { infoHashes.V1!, infoHashes.V2! }.Where (t => t != null)) {
-                var d = (BEncodedDictionary) files[BEncodedString.FromMemory (infoHash.Truncate ()!.AsMemory ())];
+                if (!files.TryGetValue (BEncodedString.FromMemory (infoHash.Truncate ().AsMemory ()), out BEncodedValue? val))
+                    continue;
+
+                var d = (BEncodedDictionary) val;
                 int complete = 0, downloaded = 0, incomplete = 0;
                 foreach (KeyValuePair<BEncodedString, BEncodedValue> kp in d) {
                     switch (kp.Key.ToString ()) {

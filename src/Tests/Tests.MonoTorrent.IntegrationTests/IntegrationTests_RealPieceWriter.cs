@@ -5,16 +5,21 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Security.AccessControl;
 using System.Threading;
 using System.Threading.Tasks;
 
 using MonoTorrent;
 using MonoTorrent.Client;
 using MonoTorrent.Connections.TrackerServer;
+using MonoTorrent.PieceWriter;
 using MonoTorrent.TrackerServer;
 
 using NUnit.Framework;
+
+using ReusableTasks;
 
 namespace Tests.MonoTorrent.IntegrationTests
 {
@@ -40,7 +45,7 @@ namespace Tests.MonoTorrent.IntegrationTests
 
     public abstract class IntegrationTestsBase
     {
-        static readonly TimeSpan CancellationTimeout = Debugger.IsAttached ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds (20);
+        static readonly TimeSpan CancellationTimeout = Debugger.IsAttached ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds (60);
 
         public IPAddress AnyAddress { get; }
         public IPAddress LoopbackAddress { get; }
@@ -48,10 +53,14 @@ namespace Tests.MonoTorrent.IntegrationTests
         protected IntegrationTestsBase (IPAddress anyAddress, IPAddress loopbackAddress)
             => (AnyAddress, LoopbackAddress) = (anyAddress, loopbackAddress);
 
+        protected virtual Factories LeecherFactory => Factories.Default;
+        protected virtual Factories SeederFactory => Factories.Default;
+
+
         [OneTimeSetUp]
         public void FixtureSetup ()
         {
-            (_tracker, _trackerListener) = GetTracker (_trackerPort);
+            (_tracker, _trackerListener) = GetTracker ();
             _httpSeeder = CreateWebSeeder ();
         }
 
@@ -63,11 +72,24 @@ namespace Tests.MonoTorrent.IntegrationTests
             _directory = Directory.CreateDirectory (tempDirectory);
             _seederDir = _directory.CreateSubdirectory ("Seeder");
             _leecherDir = _directory.CreateSubdirectory ("Leecher");
+
+            streams = new List<FileStream> ();
+            seederEngine = GetEngine (0, SeederFactory);
+            leecherEngine = GetEngine (0, LeecherFactory);
         }
 
         [TearDown]
-        public void TearDown ()
+        public async Task TearDown ()
         {
+            if (seederEngine != null)
+                await seederEngine.StopAllAsync ();
+            if (leecherEngine != null)
+                await leecherEngine.StopAllAsync ();
+
+            foreach (var stream in streams)
+                stream.Dispose ();
+            streams = null;
+
             _directory?.Refresh ();
             if (_directory?.Exists == true) {
                 _directory.Delete (true);
@@ -84,10 +106,8 @@ namespace Tests.MonoTorrent.IntegrationTests
             _trackerListener.Stop ();
         }
 
-        const int _trackerPort = 40000;
-        const int _seederPort = 40001;
-        const int _leecherPort = 40002;
-        const int _webSeedPort = 40003;
+        int _webSeedPort;
+        int _trackerPort;
         const string _webSeedPrefix = "SeedUrlPrefix";
         const string _torrentName = "IntegrationTests";
 
@@ -99,6 +119,10 @@ namespace Tests.MonoTorrent.IntegrationTests
         private DirectoryInfo _leecherDir;
 
         private bool _failHttpRequest;
+
+        ClientEngine seederEngine;
+        ClientEngine leecherEngine;
+        List<FileStream> streams;
 
         [Test]
         public async Task DownloadFileInTorrent_V1 () => await CreateAndDownloadTorrent (TorrentType.V1Only, createEmptyFile: false, explitlyHashCheck: false);
@@ -161,7 +185,7 @@ namespace Tests.MonoTorrent.IntegrationTests
         [Test]
         public async Task WebSeedDownload_V2 () => await CreateAndDownloadTorrent (TorrentType.V2Only, createEmptyFile: true, explitlyHashCheck: false, useWebSeedDownload: true);
 
-        public async Task CreateAndDownloadTorrent (TorrentType torrentType, bool createEmptyFile, bool explitlyHashCheck, int nonEmptyFileCount = 2, bool useWebSeedDownload = false, int fileSize = 5)
+        public async Task CreateAndDownloadTorrent (TorrentType torrentType, bool createEmptyFile, bool explitlyHashCheck, int nonEmptyFileCount = 2, bool useWebSeedDownload = false, long fileSize = 5, IPieceWriter writer = null)
         {
             var emptyFile = new FileInfo (Path.Combine (_seederDir.FullName, "Empty.file"));
             if (createEmptyFile)
@@ -170,8 +194,20 @@ namespace Tests.MonoTorrent.IntegrationTests
             var nonEmptyFiles = new List<FileInfo> ();
             for (int i = 0; i < nonEmptyFileCount; i++) {
                 var nonEmptyFile = new FileInfo (Path.Combine (_seederDir.FullName, $"NonEmpty{i}.file"));
-                var fileText = new String ('a', fileSize);
-                File.WriteAllText (nonEmptyFile.FullName, fileText);
+                var fs = new FileStream (nonEmptyFile.FullName, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite, 4096, FileOptions.DeleteOnClose);
+                streams.Add (fs);
+
+                long written = 0;
+                var buffer = new byte[16 * 1024];
+                for (int j = 0; j < buffer.Length; j++)
+                    buffer[j] = (byte) 'a';
+                while (written < fileSize) {
+                    var toWrite = Math.Min (fileSize - written, buffer.Length);
+                    fs.Write (buffer, 0, (int) toWrite);
+                    written += toWrite;
+                }
+
+                fs.Flush ();
                 nonEmptyFiles.Add (nonEmptyFile);
             }
 
@@ -185,19 +221,22 @@ namespace Tests.MonoTorrent.IntegrationTests
             var encodedTorrent = await torrentCreator.CreateAsync (fileSource);
             var torrent = Torrent.Load (encodedTorrent);
 
-            using ClientEngine seederEngine = GetEngine (_seederPort);
-            using ClientEngine leecherEngine = GetEngine (_leecherPort);
-
             var seederIsSeeding = new TaskCompletionSource<bool> ();
-            var leecherIsSeeding = new TaskCompletionSource<object> ();
+            var leecherIsSeeding = new TaskCompletionSource<bool> ();
             EventHandler<TorrentStateChangedEventArgs> seederIsSeedingHandler = (o, e) => {
                 if (e.NewState == TorrentState.Seeding)
                     seederIsSeeding.TrySetResult (true);
+                else if (e.NewState == TorrentState.Downloading)
+                    seederIsSeeding.TrySetResult (false);
+                else if (e.NewState == TorrentState.Error)
+                    seederIsSeeding.TrySetException (e.TorrentManager.Error.Exception);
             };
 
             EventHandler<TorrentStateChangedEventArgs> leecherIsSeedingHandler = (o, e) => {
                 if (e.NewState == TorrentState.Seeding)
                     leecherIsSeeding.TrySetResult (true);
+                else if (e.NewState == TorrentState.Error)
+                    leecherIsSeeding.TrySetException (e.TorrentManager.Error.Exception);
             };
 
             var seederManager = !useWebSeedDownload ? await StartTorrent (seederEngine, torrent, _seederDir.FullName, explitlyHashCheck, seederIsSeedingHandler) : null;
@@ -210,6 +249,7 @@ namespace Tests.MonoTorrent.IntegrationTests
 
             if (!useWebSeedDownload) {
                 Assert.DoesNotThrowAsync (async () => await seederIsSeeding.Task, "Seeder should be seeding after hashcheck completes");
+                Assert.True (seederManager.Complete, "Seeder should have all data");
             }
             Assert.DoesNotThrowAsync (async () => await leecherIsSeeding.Task, "Leecher should have downloaded all data");
 
@@ -222,19 +262,28 @@ namespace Tests.MonoTorrent.IntegrationTests
             Assert.AreEqual (createEmptyFile, leecherEmptyFile.Exists, "Empty file should exist when created");
         }
 
-        private (TrackerServer, ITrackerListener) GetTracker (int port)
+        private (TrackerServer, ITrackerListener) GetTracker ()
         {
-            var tracker = new TrackerServer ();
-            tracker.AllowUnregisteredTorrents = true;
-            var listenAddress = $"http://{new IPEndPoint (LoopbackAddress, port)}/";
+            for (_trackerPort = 4000; _trackerPort < 4100; _trackerPort++) {
+                try {
+                    var tracker = new TrackerServer ();
+                    tracker.AllowUnregisteredTorrents = true;
+                    var listenAddress = $"http://{new IPEndPoint (LoopbackAddress, _trackerPort)}/";
 
-            var listener = TrackerListenerFactory.CreateHttp (listenAddress);
-            tracker.RegisterListener (listener);
-            listener.Start ();
-            return (tracker, listener);
+                    var listener = TrackerListenerFactory.CreateHttp (listenAddress);
+                    tracker.RegisterListener (listener);
+                    listener.Start ();
+                    return (tracker, listener);
+                } catch (Exception ex) {
+                    Console.WriteLine ("Couldn't get a tracker port for integration tests:");
+                    Console.WriteLine (ex);
+                    continue;
+                }
+            }
+            throw new Exception ("No ports were free?");
         }
 
-        private ClientEngine GetEngine (int port)
+        private ClientEngine GetEngine (int port, Factories factories)
         {
             // Give an example of how settings can be modified for the engine.
             var type = AnyAddress.AddressFamily == AddressFamily.InterNetwork ? "ipv4" : "ipv6";
@@ -248,17 +297,25 @@ namespace Tests.MonoTorrent.IntegrationTests
                 AllowPortForwarding = false,
                 WebSeedDelay = TimeSpan.Zero,
             };
-            var engine = new ClientEngine (settingBuilder.ToSettings ());
+            var engine = new ClientEngine (settingBuilder.ToSettings (), factories);
             return engine;
         }
 
         private HttpListener CreateWebSeeder ()
         {
-            HttpListener listener = new HttpListener ();
-            listener.Prefixes.Add ($"http://{new IPEndPoint(LoopbackAddress, _webSeedPort)}/");
-            listener.Start ();
-            listener.BeginGetContext (OnHttpContext, listener);
-            return listener;
+            for (_webSeedPort = 5000; _webSeedPort < 5100; _webSeedPort++) {
+                try {
+                    HttpListener listener = new HttpListener ();
+                    listener.Prefixes.Add ($"http://{new IPEndPoint (LoopbackAddress, _webSeedPort)}/");
+                    listener.Start ();
+                    listener.BeginGetContext (OnHttpContext, listener);
+                    return listener;
+                } catch (Exception ex) {
+                    Console.WriteLine ("Couldn't get a port for integration tests:");
+                    Console.WriteLine (ex);
+                }
+            }
+            throw new Exception ("No ports were free?");
         }
 
         private void OnHttpContext (IAsyncResult ar)
@@ -293,7 +350,7 @@ namespace Tests.MonoTorrent.IntegrationTests
                     ctx.Response.StatusCode = 406;
                     ctx.Response.Close ();
                 } else {
-                    using FileStream fs = new FileStream (file.FullName, FileMode.Open, FileAccess.Read);
+                    using FileStream fs = new FileStream (file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                     long start = 0;
                     long end = fs.Length - 1;
                     var rangeHeader = ctx.Request.Headers["Range"];
