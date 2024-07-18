@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <PackageReference Update="Mono.Nat" Version="$(MonoNatVersion)" />
+    <PackageReference Update="StandardSocketsHttpHandler" Version="$(StandardSocketsHttpHandlerVersion)" />
   </ItemGroup>
   
   <ItemGroup>
@@ -41,6 +42,10 @@
     <PackageReference Update="ReusableTasks" Version="$(ReusableTasksVersion)" />
     <PackageReference Update="System.Memory" Version="$(SystemMemoryVersion)" />
   </ItemGroup>
+
+  <Target Name="CreateOutDirectory" BeforeTargets="_GetAllRestoreProjectPathItems;Restore;BeforeResolveReferences;CollectPackageReferences">
+    <MakeDir Directories="$(Out)" />
+  </Target>
 
   <Target Name="SetAssemblyVersion" BeforeTargets="GetAssemblyVersion" Condition="'$(RestoreSuccess)' != 'true' Or '$(Configuration)' == 'Debug' Or '$(GitInfoVersion)' == '' ">
     <PropertyGroup>

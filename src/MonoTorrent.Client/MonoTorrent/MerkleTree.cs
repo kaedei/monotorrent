@@ -1,5 +1,5 @@
 ﻿//
-// MerkleLayers.cs
+// MerkleTree.cs
 //
 // Authors:
 //   Alan McGovern alan.mcgovern@gmail.com
@@ -36,7 +36,7 @@ using System.Security.Cryptography;
 
 namespace MonoTorrent
 {
-    public class MerkleLayers
+    public class MerkleTree
     {
         const int HashCodeLength = 32;
 
@@ -46,7 +46,9 @@ namespace MonoTorrent
 
         public int PieceLayerIndex { get; }
 
-        public MerkleLayers (MerkleRoot expectedRoot, int pieceLength, int pieceLayerHashCount)
+        public int PieceLayerHashCount => Layers[PieceLayerIndex].Length / 32;
+
+        public MerkleTree (MerkleRoot expectedRoot, int pieceLength, int pieceLayerHashCount)
         {
             if (pieceLayerHashCount == 1)
                 throw new ArgumentException ("A merkletree must have 2 or more hashes");
@@ -55,6 +57,9 @@ namespace MonoTorrent
             Layers = new List<Memory<byte>> ();
 
             var finalLayer = BitOps.CeilLog2 (pieceLayerHashCount);
+
+            // starting at the 16kB block size, add the layers all the way up to the one that'd fit all the data
+            // 16kB -> 32kB -> 64kB etc
             for (int i = 0; i < PieceLayerIndex; i++)
                 Layers.Add (Memory<byte>.Empty);
             for (int layer = PieceLayerIndex; layer <= PieceLayerIndex + finalLayer; layer++) {
@@ -66,30 +71,43 @@ namespace MonoTorrent
             ExpectedRoot = expectedRoot;
         }
 
-        public bool TryAppend (int baseLayer, int index, int length, ReadOnlySpan<byte> hashes, ReadOnlySpan<byte> proofs)
+        public bool TryAppend (int baseLayer, int index, int length, ReadOnlySpan<byte> hashesAndProofs)
         {
-            var fileHashes = Layers[baseLayer];
-            var hashOffset = index * HashCodeLength;
-            var hashLength = length * HashCodeLength;
-            if (hashOffset > fileHashes.Length)
-                return false;
+            // support building the piece layer only.
+            if (baseLayer != PieceLayerIndex)
+                throw new NotSupportedException ();
 
-            var actualLength = Math.Min ((fileHashes.Length / 32) - index, length);
+            // Length is always a power of 2 and other clients fill in padding hashes
+            // if the piece layer is (for example) of length 9 and a request of size
+            // 16 is sent. Extra hashes, if they exist, are the required proofs.
+            ReadOnlySpan<byte> hashes = hashesAndProofs.Slice (0, length * 32);
+            ReadOnlySpan<byte> proofs = hashesAndProofs.Slice (length * 32);
+
+            var fileHashes = Layers[baseLayer];
+            var hashBytesOffset = index * HashCodeLength;
+            if (hashBytesOffset > fileHashes.Length)
+                return false;
 
             Span<byte> computedHash = stackalloc byte[32];
             using var hasher = IncrementalHash.CreateHash (HashAlgorithmName.SHA256);
-            if (!MerkleHash.TryHash (hasher, hashes, baseLayer, proofs, index, length, computedHash, out int written))
+            if (!MerkleTreeHasher.TryHash (hasher, hashes, baseLayer, proofs, index, length, computedHash, out int written))
                 return false;
             if (!ExpectedRoot.IsEmpty && !computedHash.SequenceEqual (ExpectedRoot.Span))
                 return false;
             if (ExpectedRoot.IsEmpty)
                 ExpectedRoot = new MerkleRoot (computedHash);
-            
-            hashes.Slice (0, hashLength).CopyTo (fileHashes.Span.Slice (hashOffset, hashLength));
+
+            // The internal merkle tree is sparse when working with the piece layer, or any layer closer to the 16kB block layer.
+            // if there are 9 sha256 hashes of data in the piece layer, we allocate an array which is 9 elements long rather than
+            // the full 16 elements (closest power of 2).
+            //
+            // If the data has been validated, then we just need to copy blocks 0-8 as we 'know' blocks 9->15 are just the padding hashes.
+            var remainingHashesBytes = Math.Min (fileHashes.Length - hashBytesOffset, length * 32);
+            hashes.Slice (0, remainingHashesBytes).CopyTo (fileHashes.Span.Slice (hashBytesOffset, remainingHashesBytes));
             return true;
         }
 
-        public bool TryVerify ([NotNullWhen (true)] out ReadOnlyMerkleLayers? verifiedMerkleTree)
+        public bool TryVerify ([NotNullWhen (true)] out ReadOnlyMerkleTree? verifiedMerkleTree)
         {
             verifiedMerkleTree = null;
             int written = 0;
@@ -106,14 +124,14 @@ namespace MonoTorrent
                 if (src.Length % 64 == 32) {
                     hasher.AppendData (src.Span.Slice (src.Length - 32, 32));
                     // Math.Pow(2, layer) == 1 << layer
-                    hasher.AppendData (MerkleHash.PaddingHashesByLayer[layer].Span);
+                    hasher.AppendData (MerkleTreeHasher.PaddingHashesByLayer[layer].Span);
                     if (!hasher.TryGetHashAndReset (dest.Slice (dest.Length - 32, 32).Span, out written) || written != 32)
                         return false;
                 }
             }
 
             if (Layers[Layers.Count - 1].Span.SequenceEqual (ExpectedRoot.Span))
-                verifiedMerkleTree = new ReadOnlyMerkleLayers (Layers.Select (t => (ReadOnlyMemory<byte>) t).ToList ().AsReadOnly (), PieceLayerIndex);
+                verifiedMerkleTree = new ReadOnlyMerkleTree (Layers.Select (t => (ReadOnlyMemory<byte>) t).ToList ().AsReadOnly (), PieceLayerIndex);
 
             return verifiedMerkleTree != null;
         }
