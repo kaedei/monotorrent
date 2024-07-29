@@ -36,6 +36,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using MonoTorrent.BEncoding;
+using MonoTorrent.Connections;
 using MonoTorrent.Connections.Tracker;
 using MonoTorrent.Connections.TrackerServer;
 using MonoTorrent.Messages.UdpTracker;
@@ -99,6 +100,8 @@ namespace MonoTorrent.Trackers
 
             trackerConnection = new UdpTrackerConnection (new Uri ($"udp://127.0.0.1:{listener.LocalEndPoint.Port}/announce/"), AddressFamily.InterNetwork);
             tracker = new Tracker (trackerConnection);
+            
+            Assert.AreEqual (listener.Status, ListenerStatus.Listening, "listener is listening");
 
             listener.IgnoreAnnounces = false;
             listener.IgnoreConnects = false;
@@ -334,17 +337,19 @@ namespace MonoTorrent.Trackers
         [Test]
         public async Task AnnounceTest_NoConnect_ThenConnect ()
         {
-            trackerConnection.RetryDelay = TimeSpan.Zero;
+            Assert.AreEqual (listener.Status, ListenerStatus.Listening, "listener is listening");
+
+            trackerConnection.RetryDelay = TimeSpan.FromSeconds(0);
             listener.IgnoreConnects = true;
             var response = await tracker.AnnounceAsync (announceparams, CancellationToken.None).WithTimeout ();
-            Assert.AreEqual (TrackerState.Offline, tracker.Status);
-            Assert.AreEqual (TrackerState.Offline, response.State);
+            Assert.AreEqual (TrackerState.Offline, tracker.Status, "tracker status should be offline");
+            Assert.AreEqual (TrackerState.Offline, response.State, "response status shoudl be offline");
 
             trackerConnection.RetryDelay = TimeSpan.FromSeconds (5);
             listener.IgnoreConnects = false;
             response = await tracker.AnnounceAsync (announceparams, CancellationToken.None);
-            Assert.AreEqual (TrackerState.Ok, tracker.Status);
-            Assert.AreEqual (TrackerState.Ok, response.State);
+            Assert.AreEqual (TrackerState.Ok, tracker.Status, "tracker status should be ok");
+            Assert.AreEqual (TrackerState.Ok, response.State, "response status should be ok");
         }
 
         [Test]
@@ -464,14 +469,14 @@ namespace MonoTorrent.Trackers
             trackerConnection.RetryDelay = TimeSpan.Zero;
             listener.IgnoreScrapes = true;
             var response = await tracker.ScrapeAsync (scrapeParams, CancellationToken.None).WithTimeout ();
-            Assert.AreEqual (TrackerState.Offline, tracker.Status);
-            Assert.AreEqual (TrackerState.Offline, response.State);
+            Assert.AreEqual (TrackerState.Offline, tracker.Status, "tracker should be offline");
+            Assert.AreEqual (TrackerState.Offline, response.State, "response should be offline");
 
             trackerConnection.RetryDelay = TimeSpan.FromSeconds (5);
             listener.IgnoreScrapes = false;
             response = await tracker.ScrapeAsync (scrapeParams, CancellationToken.None);
-            Assert.AreEqual (TrackerState.Ok, tracker.Status);
-            Assert.AreEqual (TrackerState.Ok, response.State);
+            Assert.AreEqual (TrackerState.Ok, tracker.Status, "tracker should be ok");
+            Assert.AreEqual (TrackerState.Ok, response.State, "response should be ok");
 
         }
     }
