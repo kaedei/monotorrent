@@ -93,14 +93,17 @@ namespace MonoTorrent.Client
             await ClientEngine.MainLoop;
             var peerInfo = new PeerInfo (e.Connection.Uri);
             try {
-                if (Engine.ConnectionManager.ShouldBanPeer (peerInfo)) {
+                if (Engine.ConnectionManager.ShouldBanPeer (peerInfo, AttemptConnectionStage.BeforeConnectionEstablished)) {
                     e.Connection.Dispose ();
                     return;
                 }
                 if (!e.Connection.IsIncoming) {
                     var manager = Engine.Torrents.First (t => t.InfoHashes.Contains (e.InfoHash!));
                     var peer = new Peer (peerInfo);
-                    await Engine.ConnectionManager.ProcessNewOutgoingConnection (manager, peer, e.Connection);
+                    // FIXME: THis is a hack to inject connections into the engine. Kill the hack, and then we don't have to hardcode that this
+                    // always uses tier[0].
+                    // This is only used for tests, so it's fine.
+                    await Engine.ConnectionManager.ProcessNewOutgoingConnection (manager, peer, e.Connection, Engine.Settings.OutgoingConnectionEncryptionTiers[0]);
                     return;
                 }
 
@@ -160,13 +163,12 @@ namespace MonoTorrent.Client
 
             var id = new PeerId (peer, connection, new BitField (man.Bitfield.Length).SetAll (false), infoHash) {
                 Decryptor = decryptor,
-                Encryptor = encryptor
+                Encryptor = encryptor,
+                ClientApp = new Software (message.PeerId),
             };
 
             man.Mode.HandleMessage (id, message, default);
             logger.Info (id.Connection, "Handshake successful handled");
-
-            id.ClientApp = new Software (message.PeerId);
 
             return await Engine.ConnectionManager.IncomingConnectionAcceptedAsync (man, id);
         }
