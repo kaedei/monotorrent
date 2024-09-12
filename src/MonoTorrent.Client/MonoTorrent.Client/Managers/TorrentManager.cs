@@ -732,6 +732,12 @@ namespace MonoTorrent.Client
         public async Task StartAsync ()
             => await StartAsync (false);
 
+        /// <summary>
+        /// Starts the TorrentManager and only downloads the metadata.
+        /// </summary>
+        public async Task StartMetadataAsync ()
+            => await StartAsync (true);
+
         internal async Task StartAsync (bool metadataOnly)
         {
             await ClientEngine.MainLoop;
