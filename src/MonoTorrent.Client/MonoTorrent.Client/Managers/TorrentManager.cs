@@ -50,7 +50,7 @@ namespace MonoTorrent.Client
     {
         #region Events
 
-        internal event EventHandler<ReadOnlyMemory<byte>>? MetadataReceived;
+        public event EventHandler<ReadOnlyMemory<byte>>? MetadataReceived;
 
         /// <summary>
         /// This asynchronous event is raised whenever a new incoming, or outgoing, connection
@@ -702,6 +702,12 @@ namespace MonoTorrent.Client
         public async Task StartAsync ()
             => await StartAsync (false);
 
+        /// <summary>
+        /// Starts the TorrentManager and only downloads the metadata.
+        /// </summary>
+        public async Task StartMetadataAsync ()
+            => await StartAsync (true);
+
         internal async Task StartAsync (bool metadataOnly)
         {
             await ClientEngine.MainLoop;
@@ -837,6 +843,23 @@ namespace MonoTorrent.Client
             } catch {
                 token.ThrowIfCancellationRequested ();
                 throw;
+            }
+        }
+
+        public async Task DisconnectPeerAsync (PeerId id)
+        {
+            await ClientEngine.MainLoop;
+            DisconnectPeer (id);
+        }
+
+        internal void DisconnectPeer (PeerId id)
+        {
+            if (id == null)
+                throw new ArgumentNullException (nameof (id));
+
+            if (Peers.ConnectedPeers.Contains (id)) {
+                Engine!.ConnectionManager.CleanupSocket (this, id);
+                Peers.ConnectedPeers.Remove (id);
             }
         }
 
