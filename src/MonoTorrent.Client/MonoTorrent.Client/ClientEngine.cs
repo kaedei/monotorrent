@@ -808,7 +808,7 @@ namespace MonoTorrent.Client
             StatsUpdate?.InvokeAsync (this, args);
         }
 
-        internal async Task StartAsync ()
+        public async Task StartAsync ()
         {
             CheckDisposed ();
             if (!IsRunning) {

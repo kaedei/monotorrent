@@ -288,10 +288,10 @@ namespace MonoTorrent.Dht
             MessageLoop.Start ();
             if (RoutingTable.NeedsBootstrap) {
                 RaiseStateChanged (DhtState.Initialising);
-                InitializeAsync (nodes, bootstrapRouters);
             } else {
                 RaiseStateChanged (DhtState.Ready);
             }
+            InitializeAsync (nodes, bootstrapRouters);
 
             MainLoop.QueueTimeout (TimeSpan.FromSeconds (30), delegate {
                 if (!Disposed) {
