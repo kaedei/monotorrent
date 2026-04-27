@@ -5,6 +5,16 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <NativeAotPublish Condition="'$(NativeAotPublish)' == ''">false</NativeAotPublish>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0' and '$(NativeAotPublish)' == 'true'">
+    <PublishAot>true</PublishAot>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(SelfContained)' == ''">true</SelfContained>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\MonoTorrent\MonoTorrent.csproj" />
     <ProjectReference Include="..\..\MonoTorrent.BEncoding\MonoTorrent.BEncoding.csproj" />
