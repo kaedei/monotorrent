@@ -25,6 +25,12 @@ steps:
 # Install some versions so tests can run
 # Use .NET Core 5.0
 - task: UseDotNet@2
+  displayName: 'Install net10_sdk'
+  inputs:
+    packageType: 'sdk'
+    version: '10.x'
+
+- task: UseDotNet@2
   displayName: 'Install net3_1_x'
   inputs:
     packageType: 'runtime'
