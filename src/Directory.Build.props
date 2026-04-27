@@ -41,6 +41,9 @@
     <NoWarn>1701;1702;1591;0419;netsdk1138</NoWarn>
     <CheckEolTargetFramework>false</CheckEolTargetFramework>
 
+    <EnableNet10AotAnalysis Condition="'$(EnableNet10AotAnalysis)' == ''">false</EnableNet10AotAnalysis>
+    <EnableNet10AotAnalysis Condition="'$(EnableNativeAotAnalysis)' != '' and '$(EnableNet10AotAnalysis)' == 'false'">$(EnableNativeAotAnalysis)</EnableNet10AotAnalysis>
+
     <LangVersion>8.0</LangVersion>
     <DebugType>embedded</DebugType>
     <DebugSymbols>true</DebugSymbols>
@@ -56,6 +59,13 @@
     <RunAnalyzersDuringBuild>False</RunAnalyzersDuringBuild>
     <RunAnalyzersDuringLiveAnalysis>False</RunAnalyzersDuringLiveAnalysis>
     <RestoreLockedMode Condition="$(CI) and '$(RestoreLockedMode)' == ''">false</RestoreLockedMode>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0' and '$(EnableNet10AotAnalysis)' == 'true'">
+    <RunAnalyzersDuringBuild>true</RunAnalyzersDuringBuild>
+    <RunAnalyzersDuringLiveAnalysis>true</RunAnalyzersDuringLiveAnalysis>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
   </PropertyGroup>
 
   <PropertyGroup>

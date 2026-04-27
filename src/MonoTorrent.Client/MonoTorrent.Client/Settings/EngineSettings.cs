@@ -53,6 +53,8 @@ namespace MonoTorrent.Client
         /// </summary>
         public IList<EncryptionType> AllowedEncryption { get; } = EncryptionTypes.All;
 
+        internal IList<IList<EncryptionType>> OutgoingConnectionEncryptionTiers { get; } = Array.Empty<IList<EncryptionType>> ();
+
         /// <summary>
         /// Have suppression reduces the number of Have messages being sent by only sending Have messages to peers
         /// which do not already have that piece. A peer will never request a piece they have already downloaded,
@@ -106,6 +108,19 @@ namespace MonoTorrent.Client
         public string CacheDirectory { get; } = Path.Combine (Environment.CurrentDirectory, "cache");
 
         /// <summary>
+        /// The delay between each retry when attempting to establish an outgoing connection attempt to a given peer.
+        /// Typically an array of length 4 specifying a delay of of 10s, 30s, 60s and 120s. This allows 1 initial attempt
+        /// and four retries. If a connection cannot be established after exhausting all retries, the peer's information
+        /// will be discarded.
+        /// </summary>
+        public IList<TimeSpan> ConnectionRetryDelays { get; } = Array.AsReadOnly (new[] {
+            TimeSpan.FromSeconds (10),
+            TimeSpan.FromSeconds (30),
+            TimeSpan.FromSeconds (60),
+            TimeSpan.FromSeconds (120),
+        });
+
+        /// <summary>
         /// If a connection attempt does not complete within the given timeout, it will be cancelled so
         /// a connection can be attempted with a new peer. Defaults to 10 seconds. It is highly recommended
         /// to keep this value within a range of 7-15 seconds unless absolutely necessary.
@@ -152,6 +167,11 @@ namespace MonoTorrent.Client
         /// Defaults to <see cref="FastResumeMode.BestEffort"/>.
         /// </summary>
         public FastResumeMode FastResumeMode { get; } = FastResumeMode.BestEffort;
+
+        /// <summary>
+        /// Sets the preferred approach to creating new files.
+        /// </summary>
+        public FileCreationOptions FileCreationOptions { get; } = FileCreationOptions.PreferSparse;
 
         /// <summary>
         /// The list of HTTP(s) endpoints which the engine should bind to when a <see cref="TorrentManager"/> is set up
@@ -266,14 +286,17 @@ namespace MonoTorrent.Client
         internal EngineSettings (
             IList<EncryptionType> allowedEncryption, bool allowHaveSuppression, bool allowLocalPeerDiscovery, bool allowPortForwarding,
             bool autoSaveLoadDhtCache, bool autoSaveLoadFastResume, bool autoSaveLoadMagnetLinkMetadata, string cacheDirectory,
-            TimeSpan connectionTimeout, IPEndPoint? dhtEndPoint, int diskCacheBytes, CachePolicy diskCachePolicy, FastResumeMode fastResumeMode, Dictionary<string, IPEndPoint> listenEndPoints,
+            TimeSpan connectionTimeout, IPEndPoint? dhtEndPoint, int diskCacheBytes, CachePolicy diskCachePolicy, FastResumeMode fastResumeMode,
+            FileCreationOptions fileCreationMode, Dictionary<string, IPEndPoint> listenEndPoints,
             int maximumConnections, int maximumDiskReadRate, int maximumDiskWriteRate, int maximumDownloadRate, int maximumHalfOpenConnections,
             int maximumOpenFiles, int maximumUploadRate, IDictionary<string, IPEndPoint> reportedListenEndPoints, bool usePartialFiles,
             TimeSpan webSeedConnectionTimeout, TimeSpan webSeedDelay, int webSeedSpeedTrigger, TimeSpan staleRequestTimeout,
-            string httpStreamingPrefix)
+            string httpStreamingPrefix, IList<TimeSpan> connectionRetryDelays)
         {
             // Make sure this is immutable now
-            AllowedEncryption = EncryptionTypes.MakeReadOnly (allowedEncryption);
+            AllowedEncryption = EncryptionTypes.MakeReadOnly (allowedEncryption.ToArray ());
+            OutgoingConnectionEncryptionTiers = UpdateEncryptionTiers (AllowedEncryption);
+
             AllowHaveSuppression = allowHaveSuppression;
             AllowLocalPeerDiscovery = allowLocalPeerDiscovery;
             AllowPortForwarding = allowPortForwarding;
@@ -284,8 +307,10 @@ namespace MonoTorrent.Client
             DiskCacheBytes = diskCacheBytes;
             DiskCachePolicy = diskCachePolicy;
             CacheDirectory = cacheDirectory;
+            ConnectionRetryDelays = Array.AsReadOnly (connectionRetryDelays.ToArray ());
             ConnectionTimeout = connectionTimeout;
             FastResumeMode = fastResumeMode;
+            FileCreationOptions = fileCreationMode;
             HttpStreamingPrefix = httpStreamingPrefix;
             ListenEndPoints = new ReadOnlyDictionary<string, IPEndPoint> (new Dictionary<string, IPEndPoint> (listenEndPoints));
             MaximumConnections = maximumConnections;
@@ -301,6 +326,28 @@ namespace MonoTorrent.Client
             WebSeedConnectionTimeout = webSeedConnectionTimeout;
             WebSeedDelay = webSeedDelay;
             WebSeedSpeedTrigger = webSeedSpeedTrigger;
+        }
+
+        static IList<IList<EncryptionType>> UpdateEncryptionTiers (IList<EncryptionType> allowedEncryption)
+        {
+            var tiers = new List<IList<EncryptionType>> ();
+            while (allowedEncryption.Count > 0) {
+                // If both encrypted methods are consecutive, create a tier consisting of both. The encrypted handshake will take the first
+                // one both sides support. Otherwise, create a tier with just that single method.
+                //
+                // This supports tiers like:
+                //      PlainText, RC4Header, RC4Full       [two tiers]
+                //      RC4Header, PlainText, RC4Full       [three tiers]
+                //      RC4Full, RC4Header, PlainText       [two tiers]
+                if (allowedEncryption.Count >= 2 && allowedEncryption[0] != EncryptionType.PlainText && allowedEncryption[1] != EncryptionType.PlainText) {
+                    tiers.Add (Array.AsReadOnly (new[] { allowedEncryption[0], allowedEncryption[1] }));
+                    allowedEncryption = allowedEncryption.Skip (2).ToArray ();
+                } else {
+                    tiers.Add (Array.AsReadOnly (new[] { allowedEncryption[0] }));
+                    allowedEncryption = allowedEncryption.Skip (1).ToArray ();
+                }
+            }
+            return tiers;
         }
 
         internal string GetDhtNodeCacheFilePath ()
@@ -374,6 +421,19 @@ namespace MonoTorrent.Client
                    MaximumUploadRate +
                    MaximumHalfOpenConnections +
                    CacheDirectory.GetHashCode ();
+        }
+
+        internal TimeSpan? GetConnectionRetryDelay (int failedConnectionAttempts)
+        {
+            // If we've never failed to connect to the peer, connect immediately.
+            if (failedConnectionAttempts <= 0)
+                return TimeSpan.Zero;
+
+            // If this is the Nth retry (i.e. N previous failure) then we apply
+            // the delay at array position N-1.
+            if (failedConnectionAttempts - 1 < ConnectionRetryDelays.Count)
+                return ConnectionRetryDelays[failedConnectionAttempts - 1];
+            return null;
         }
     }
 }

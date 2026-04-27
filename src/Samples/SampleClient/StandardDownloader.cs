@@ -32,7 +32,7 @@ namespace ClientSample
             var torrentsPath = Path.Combine (Environment.CurrentDirectory, "Torrents");
 
 #if DEBUG
-            LoggerFactory.Register (className => new TextLogger (Console.Out, className));
+            LoggerFactory.Register (new TextWriterLogger (Console.Out));
 #endif
 
             // If the torrentsPath does not exist, we want to create it
@@ -145,22 +145,12 @@ namespace ClientSample
                     var peers = await manager.GetPeersAsync ();
                     AppendFormat (sb, "Outgoing:");
                     foreach (PeerId p in peers.Where (t => t.ConnectionDirection == Direction.Outgoing)) {
-                        AppendFormat (sb, "\t{2} - {1:0.00}/{3:0.00}kB/sec - {0} - {4} ({5})", p.Uri,
-                                                                                    p.Monitor.DownloadRate / 1024.0,
-                                                                                    p.AmRequestingPiecesCount,
-                                                                                    p.Monitor.UploadRate / 1024.0,
-                                                                                    p.EncryptionType,
-                                                                                    string.Join ("|", p.SupportedEncryptionTypes.Select (t => t.ToString ()).ToArray ()));
+                        AppendFormat (sb, $"\t{p.AmRequestingPiecesCount} - {(p.Monitor.DownloadRate / 1024.0):0.00}/{(p.Monitor.UploadRate / 1024.0):0.00}kB/sec - {p.Uri} - {p.EncryptionType}");
                     }
                     AppendFormat (sb, "");
                     AppendFormat (sb, "Incoming:");
                     foreach (PeerId p in peers.Where (t => t.ConnectionDirection == Direction.Incoming)) {
-                        AppendFormat (sb, "\t{2} - {1:0.00}/{3:0.00}kB/sec - {0} - {4} ({5})", p.Uri,
-                                                                                    p.Monitor.DownloadRate / 1024.0,
-                                                                                    p.AmRequestingPiecesCount,
-                                                                                    p.Monitor.UploadRate / 1024.0,
-                                                                                    p.EncryptionType,
-                                                                                    string.Join ("|", p.SupportedEncryptionTypes.Select (t => t.ToString ()).ToArray ()));
+                        AppendFormat (sb, $"\t{p.AmRequestingPiecesCount} - {(p.Monitor.DownloadRate / 1024.0):0.00}/{(p.Monitor.UploadRate / 1024.0):0.00}kB/sec - {p.Uri} - {p.EncryptionType}");
                     }
 
                     AppendFormat (sb, "", null);

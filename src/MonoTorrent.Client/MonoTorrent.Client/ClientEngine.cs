@@ -231,7 +231,12 @@ namespace MonoTorrent.Client
 
         internal Factories Factories { get; }
 
-        internal IList<IPeerConnectionListener> PeerListeners { get; set; } = Array.Empty<IPeerConnectionListener> ();
+
+        /// <summary>
+        /// A readonly list of the listeners which the engine is using to receive incoming connections from other peers.
+        /// This are created by passing <see cref="EngineSettings.ListenEndPoints"/> to the <see cref="Factories.CreatePeerConnectionListener(IPEndPoint)"/> factory method.
+        /// </summary>
+        public IList<IPeerConnectionListener> PeerListeners { get; private set; } = Array.Empty<IPeerConnectionListener> ();
 
         internal ILocalPeerDiscovery LocalPeerDiscovery { get; private set; }
 
@@ -614,7 +619,7 @@ namespace MonoTorrent.Client
                 } else {
                     // Add new peer to matched Torrent
                     var peer = new PeerInfo (args.Uri);
-                    int peersAdded = manager.AddPeers (new[] { peer }, manager.InfoHashes.Expand (args.InfoHash), prioritise: false, fromTracker: false);
+                    int peersAdded = manager.AddPeers (new[] { peer }, prioritise: false, fromTracker: false);
                     manager.RaisePeersFound (new LocalPeersAdded (manager, peersAdded, 1));
                 }
             } catch {
@@ -705,7 +710,7 @@ namespace MonoTorrent.Client
                 return;
 
             if (manager.CanUseDht) {
-                int successfullyAdded = await manager.AddPeersAsync (e.Peers, manager.InfoHashes.Expand (e.InfoHash));
+                int successfullyAdded = await manager.AddPeersAsync (e.Peers);
                 manager.RaisePeersFound (new DhtPeersAdded (manager, successfullyAdded, e.Peers.Count));
             } else {
                 // This is only used for unit testing to validate that even if the DHT engine
@@ -902,8 +907,9 @@ namespace MonoTorrent.Client
             // concurrently.
             using (await dhtNodeLocker.EnterAsync ().ConfigureAwait (false)) {
                 var savePath = Settings.GetDhtNodeCacheFilePath ();
-                var parentDir = Path.GetDirectoryName (savePath)!;
-                Directory.CreateDirectory (parentDir);
+                var parentDir = Path.GetDirectoryName (savePath);
+                if (!(parentDir is null))
+                    Directory.CreateDirectory (parentDir);
                 File.WriteAllBytes (savePath, nodes.ToArray ());
             }
         }

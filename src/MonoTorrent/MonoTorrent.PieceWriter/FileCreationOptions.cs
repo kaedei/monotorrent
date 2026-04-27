@@ -1,10 +1,10 @@
 ﻿//
-// TextLogger.cs
+// FileCreationOptions.cs
 //
 // Authors:
 //   Alan McGovern alan.mcgovern@gmail.com
 //
-// Copyright (C) 2020 Alan McGovern
+// Copyright (C) 2024 Alan McGovern
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files (the
@@ -13,10 +13,10 @@
 // distribute, sublicense, and/or sell copies of the Software, and to
 // permit persons to whom the Software is furnished to do so, subject to
 // the following conditions:
-//
+// 
 // The above copyright notice and this permission notice shall be
 // included in all copies or substantial portions of the Software.
-//
+// 
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 // EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 // MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -27,34 +27,20 @@
 //
 
 
-using System.IO;
-
-namespace MonoTorrent.Logging
+namespace MonoTorrent.PieceWriter
 {
-    public class TextLogger : ILogger
+    public enum FileCreationOptions
     {
-        string Prefix { get; }
-        TextWriter Writer { get; }
-
-        public TextLogger (TextWriter writer, string prefix)
-        {
-            Writer = writer;
-            Prefix = prefix;
-        }
-
-        public void Debug (string message)
-        {
-            Writer?.WriteLine ($"DEBUG:{Prefix}:{message}");
-        }
-
-        public void Error (string message)
-        {
-            Writer?.WriteLine ($"ERROR:{Prefix}:{message}");
-        }
-
-        public void Info (string message)
-        {
-            Writer?.WriteLine ($"INFO: {Prefix}:{message}");
-        }
+        /// <summary>
+        /// On filesystems where sparse files can be created, an attempt will be made to create a sparse file.
+        /// Otherwise an empty file will be created.
+        /// </summary>
+        PreferSparse,
+        /// <summary>
+        /// On filesystems which support preallocation the space required for the file will be reserved as soon
+        /// as the file is created. Otherwise, a best effort to pre-allocate will be made by writing 1 byte at
+        /// the end of the file.
+        /// </summary>
+        PreferPreallocation,
     }
 }

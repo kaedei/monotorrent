@@ -1,10 +1,10 @@
-//
-// IEncryption.cs
+﻿//
+// NullLogger.cs
 //
 // Authors:
 //   Alan McGovern alan.mcgovern@gmail.com
 //
-// Copyright (C) 2008 Alan McGovern
+// Copyright (C) 2024 Alan McGovern
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files (the
@@ -13,10 +13,10 @@
 // distribute, sublicense, and/or sell copies of the Software, and to
 // permit persons to whom the Software is furnished to do so, subject to
 // the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be
 // included in all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 // EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 // MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -28,15 +28,25 @@
 
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 
-namespace MonoTorrent.Connections.Peer.Encryption
+namespace MonoTorrent.Logging
 {
-    interface IEncryption
+    class NullLogger : IRootLogger
     {
-        void Decrypt (Span<byte> buffer);
+        public void Debug (string name, string message)
+        {
+        }
 
-        void Encrypt (Span<byte> buffer);
+        public void Error (string name, string message)
+        {
+        }
 
-        EncryptionType EncryptionType { get; }
+        public void Info (string name, string message)
+        {
+        }
     }
 }

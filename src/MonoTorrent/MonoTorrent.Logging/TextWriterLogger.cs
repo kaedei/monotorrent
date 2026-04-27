@@ -1,10 +1,10 @@
-//
-// IEncryption.cs
+﻿//
+// TextWriterLogger.cs
 //
 // Authors:
 //   Alan McGovern alan.mcgovern@gmail.com
 //
-// Copyright (C) 2008 Alan McGovern
+// Copyright (C) 2020 Alan McGovern
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files (the
@@ -13,10 +13,10 @@
 // distribute, sublicense, and/or sell copies of the Software, and to
 // permit persons to whom the Software is furnished to do so, subject to
 // the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be
 // included in all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 // EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 // MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -27,16 +27,30 @@
 //
 
 
-using System;
+using System.IO;
 
-namespace MonoTorrent.Connections.Peer.Encryption
+namespace MonoTorrent.Logging
 {
-    interface IEncryption
+    public class TextWriterLogger : IRootLogger
     {
-        void Decrypt (Span<byte> buffer);
+        TextWriter Writer { get; }
 
-        void Encrypt (Span<byte> buffer);
+        public TextWriterLogger (TextWriter writer)
+            => Writer = writer;
 
-        EncryptionType EncryptionType { get; }
+        public void Debug (string prefix, string message)
+        {
+            Writer?.WriteLine ($"DEBUG:{prefix}:{message}");
+        }
+
+        public void Error (string prefix, string message)
+        {
+            Writer?.WriteLine ($"ERROR:{prefix}:{message}");
+        }
+
+        public void Info (string prefix, string message)
+        {
+            Writer?.WriteLine ($"INFO: {prefix}:{message}");
+        }
     }
 }

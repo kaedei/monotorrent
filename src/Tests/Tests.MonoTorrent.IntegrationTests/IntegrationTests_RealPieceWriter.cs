@@ -11,9 +11,12 @@ using System.Security.AccessControl;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Mono.Nat.Logging;
+
 using MonoTorrent;
 using MonoTorrent.Client;
 using MonoTorrent.Connections.TrackerServer;
+using MonoTorrent.Logging;
 using MonoTorrent.PiecePicking;
 using MonoTorrent.PieceWriter;
 
@@ -61,6 +64,7 @@ namespace MonoTorrent.IntegrationTests
         [OneTimeSetUp]
         public void FixtureSetup ()
         {
+            MonoTorrent.Logging.LoggerFactory.Create ("test");
             (_tracker, _trackerListener) = GetTracker ();
             _httpSeeder = CreateWebSeeder ();
         }
@@ -68,6 +72,7 @@ namespace MonoTorrent.IntegrationTests
         [SetUp]
         public void Setup ()
         {
+            LoggerFactory.Register (new TextWriterLogger (TestContext.Out));
             _failHttpRequest = false;
             string tempDirectory = Path.Combine (Path.GetTempPath (), "monotorrent_tests", $"{NUnit.Framework.TestContext.CurrentContext.Test.Name}-{Path.GetRandomFileName ()}");
 
@@ -96,6 +101,7 @@ namespace MonoTorrent.IntegrationTests
             if (_directory?.Exists == true) {
                 _directory.Delete (true);
             }
+            LoggerFactory.Register (null);
         }
 
         [OneTimeTearDown]
@@ -147,6 +153,20 @@ namespace MonoTorrent.IntegrationTests
         [Test]
         public async Task DownloadFileInTorrent_V1V2 () => await CreateAndDownloadTorrent (TorrentType.V1V2Hybrid, createEmptyFile: false, explitlyHashCheck: false);
 
+        // 100 byte files will not have a 'layers' key as there's only 1 piece.
+        [Test]
+        public async Task DownloadFileInTorrent_V1V2_MagnetLink_NoLayers () => await CreateAndDownloadTorrent (TorrentType.V1V2Hybrid, createEmptyFile: false, explitlyHashCheck: false, magnetLinkLeecher: true, fileSize: 100);
+
+        // 5MB files will have a 'layers' key as there will be many pieces.
+        // Make sure we correctly upgrade BEP52 connections when receiving an incoming connection
+        [Test]
+        public async Task DownloadFileInTorrent_V1V2_MagnetLinkWithLayers_SeederIncoming () => await CreateAndDownloadTorrent (TorrentType.V1V2Hybrid, createEmptyFile: false, explitlyHashCheck: false, magnetLinkLeecher: true, fileSize: 5 * 1024 * 1024, seederConnectionDirection: Direction.Incoming);
+
+        // 5MB files will have a 'layers' key as there will be many pieces.
+        // Make sure we correctly upgrade BEP52 connections when initiating an outgoing connection
+        [Test]
+        public async Task DownloadFileInTorrent_V1V2_MagnetLinkWithLayers_SeederOutgoing () => await CreateAndDownloadTorrent (TorrentType.V1V2Hybrid, createEmptyFile: false, explitlyHashCheck: false, magnetLinkLeecher: true, fileSize: 5 * 1024 * 1024, seederConnectionDirection: Direction.Outgoing);
+
         [Test]
         public async Task DownloadEmptyFileInTorrent_V1 () => await CreateAndDownloadTorrent (TorrentType.V1Only, createEmptyFile: true, explitlyHashCheck: false);
 
@@ -193,12 +213,12 @@ namespace MonoTorrent.IntegrationTests
         [Test]
         public async Task WebSeedDownload_V2 () => await CreateAndDownloadTorrent (TorrentType.V2Only, createEmptyFile: true, explitlyHashCheck: false, useWebSeedDownload: true);
 
-        public async Task CreateAndDownloadTorrent (TorrentType torrentType, bool createEmptyFile, bool explitlyHashCheck, int nonEmptyFileCount = 2, bool useWebSeedDownload = false, long fileSize = 5, IPieceWriter writer = null, bool magnetLinkLeecher = false)
+        public async Task CreateAndDownloadTorrent (TorrentType torrentType, bool createEmptyFile, bool explitlyHashCheck, int nonEmptyFileCount = 2, bool useWebSeedDownload = false, long fileSize = 5, IPieceWriter writer = null, bool magnetLinkLeecher = false, Direction? seederConnectionDirection = null)
         {
             var emptyFile = new FileInfo (Path.Combine (_seederDir.FullName, "Empty.file"));
             if (createEmptyFile)
                 File.WriteAllText (emptyFile.FullName, "");
-            
+
             int counter = 0;
             var buffer = new byte[16 * 1024];
             var nonEmptyFiles = new List<FileInfo> ();
@@ -235,32 +255,67 @@ namespace MonoTorrent.IntegrationTests
 
             var seederIsSeeding = new TaskCompletionSource<bool> ();
             var leecherIsSeeding = new TaskCompletionSource<bool> ();
+            var leecherIsReady = new TaskCompletionSource<bool> ();
+
+            var timeout = new CancellationTokenSource (CancellationTimeout);
+            timeout.Token.Register (() => { seederIsSeeding.TrySetCanceled (); });
+            timeout.Token.Register (() => { leecherIsSeeding.TrySetCanceled (); });
+            timeout.Token.Register (() => { leecherIsReady.TrySetCanceled (); });
+
             EventHandler<TorrentStateChangedEventArgs> seederIsSeedingHandler = (o, e) => {
                 if (e.NewState == TorrentState.Seeding)
                     seederIsSeeding.TrySetResult (true);
-                else if (e.NewState == TorrentState.Downloading)
+                if (e.NewState == TorrentState.Downloading)
                     seederIsSeeding.TrySetResult (false);
-                else if (e.NewState == TorrentState.Error)
+                if (e.NewState == TorrentState.Error)
                     seederIsSeeding.TrySetException (e.TorrentManager.Error.Exception);
             };
 
             EventHandler<TorrentStateChangedEventArgs> leecherIsSeedingHandler = (o, e) => {
+                if (e.NewState == TorrentState.Downloading || e.NewState == TorrentState.FetchingHashes || e.NewState == TorrentState.Metadata)
+                    leecherIsReady.TrySetResult (true);
                 if (e.NewState == TorrentState.Seeding)
                     leecherIsSeeding.TrySetResult (true);
-                else if (e.NewState == TorrentState.Error)
+                if (e.NewState == TorrentState.Error)
                     leecherIsSeeding.TrySetException (e.TorrentManager.Error.Exception);
             };
 
+            if (seederConnectionDirection.HasValue) {
+                var engine = seederConnectionDirection == Direction.Incoming ? leecherEngine : seederEngine;
+
+                var settings = new EngineSettingsBuilder (engine.Settings);
+                settings.ListenEndPoints.Clear ();
+                settings.ReportedListenEndPoints = new Dictionary<string, IPEndPoint> {
+                        // report two fake non-routable addresses.
+                        { "ipv4", new IPEndPoint (IPAddress.Parse ("127.0.0.153"), 12345) },
+                        { "ipv6", new IPEndPoint (IPAddress.Parse ("127.0.0.153"), 12345) },
+                    };
+                await engine.UpdateSettingsAsync (settings.ToSettings ());
+            }
+
             var seederManager = !useWebSeedDownload ? await StartTorrent (seederEngine, torrent, _seederDir.FullName, explitlyHashCheck, seederIsSeedingHandler) : null;
+            if (seederManager is null)
+                seederIsSeeding.TrySetResult (true);
 
             var magnetLink = new MagnetLink (torrent.InfoHashes, "testing", torrent.AnnounceUrls.SelectMany (t => t).ToList (), null, torrent.Size);
             var leecherManager = magnetLinkLeecher
                 ? await StartTorrent (leecherEngine, magnetLink, _leecherDir.FullName, explitlyHashCheck, leecherIsSeedingHandler)
                 : await StartTorrent (leecherEngine, torrent, _leecherDir.FullName, explitlyHashCheck, leecherIsSeedingHandler);
 
-            var timeout = new CancellationTokenSource (CancellationTimeout);
-            timeout.Token.Register (() => { seederIsSeeding.TrySetCanceled (); });
-            timeout.Token.Register (() => { leecherIsSeeding.TrySetCanceled (); });
+            // Wait for both managers to finish hashing/prepping!
+            await seederIsSeeding.Task;
+            await leecherIsReady.Task;
+
+            // manually add the leecher to the seeder so we aren't unintentionally dependent on annouce ordering
+            if (seederConnectionDirection == Direction.Incoming) {
+                var listenerPort = seederEngine.PeerListeners.Single ().LocalEndPoint.Port;
+                var ipAddress = new IPEndPoint (LoopbackAddress, listenerPort);
+                await leecherEngine.Torrents[0].AddPeerAsync (new PeerInfo (new Uri ($"{(LoopbackAddress.AddressFamily == AddressFamily.InterNetwork ? "ipv4" : "ipv6")}://{ipAddress}")));
+            } else if (seederConnectionDirection == Direction.Outgoing) {
+                var listenerPort = leecherEngine.PeerListeners.Single ().LocalEndPoint.Port;
+                var ipAddress = new IPEndPoint (LoopbackAddress, listenerPort);
+                await seederEngine.Torrents[0].AddPeerAsync (new PeerInfo (new Uri ($"{(LoopbackAddress.AddressFamily == AddressFamily.InterNetwork ? "ipv4" : "ipv6")}://{ipAddress}")));
+            }
 
             if (!useWebSeedDownload) {
                 Assert.DoesNotThrowAsync (async () => await seederIsSeeding.Task, "Seeder should be seeding after hashcheck completes");
@@ -311,6 +366,7 @@ namespace MonoTorrent.IntegrationTests
                 DhtEndPoint = null,
                 AllowPortForwarding = false,
                 WebSeedDelay = TimeSpan.Zero,
+                AllowLocalPeerDiscovery = false,
             };
             var engine = new ClientEngine (settingBuilder.ToSettings (), factories);
             return engine;
@@ -410,6 +466,7 @@ namespace MonoTorrent.IntegrationTests
                 await manager.HashCheckAsync (true);
             else
                 await manager.StartAsync ();
+
             return manager;
         }
     }
